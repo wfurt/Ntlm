@@ -14,12 +14,11 @@ namespace System.Net
     {
         public bool Diag = false;
 
-        private static readonly byte[] _header = new byte[] { (byte)'N', (byte)'T', (byte)'L', (byte)'M',
-                                                              (byte)'S', (byte)'S',(byte)'P', 0 };
-        private static readonly Random Rnd;
+        private static ReadOnlySpan<byte> NtlmHeader => new byte[] { (byte)'N', (byte)'T', (byte)'L', (byte)'M',
+                                                             (byte)'S', (byte)'S',(byte)'P', 0 };
 
-        private static readonly Encoding Utf16;
-
+        private static readonly byte[] s_workstation = Encoding.Unicode.GetBytes(Environment.MachineName);
+        
         private const int ChallengeResponseLength = 24;
 
         private const int HeaderLenght = 8;
@@ -193,19 +192,18 @@ namespace System.Net
             public fixed byte sequenceof[2];
         }
 
-        private readonly NetworkCredential _nc;
-        private static readonly byte[] s_workstation;
+        private readonly NetworkCredential Credentials;
+        private readonly RandomNumberGenerator Rnd;
 
         static Ntlm()
         {
-            s_workstation = Encoding.Unicode.GetBytes(Environment.MachineName);
-            Rnd = new Random();
-            Utf16 = new UnicodeEncoding();
+         //   Rnd = new Random();
         }
 
         public Ntlm(NetworkCredential credentials)
         {
-            _nc = credentials;
+            Credentials = credentials;
+            Rnd = RandomNumberGenerator.Create();
         }
 
         public static string FlagsEnumToString<T>(Enum e)
@@ -237,13 +235,13 @@ namespace System.Net
 
         public unsafe string CreateNegotiateMessage(bool spnego = false)
         {
-            Debug.Assert(HeaderLenght == _header.Length);
+            Debug.Assert(HeaderLenght == NtlmHeader.Length);
 
             Span<byte> asBytes = stackalloc byte[sizeof(NegotiateMessage)];
             Span<NegotiateMessage> message = MemoryMarshal.Cast<byte, NegotiateMessage>(asBytes);
 
             asBytes.Clear();
-            _header.CopyTo(asBytes);
+            NtlmHeader.CopyTo(asBytes);
             message[0].Header.MessageType = MessageType.Negotiate;
             message[0].Flags = Flags.NegotiateNtlm2 | Flags.NegotiateUnicode | Flags.TargetName | Flags.TargetTypeServer | Flags.NegotiateAlwaysSign;
 
@@ -296,20 +294,20 @@ namespace System.Net
 
         private unsafe int GetFieldLength(MessageField field)
         {
-            ReadOnlySpan<byte> span = MemoryMarshal.Cast<MessageField, byte>(new ReadOnlySpan<MessageField>(&field, sizeof(MessageField)));
+            ReadOnlySpan<byte> span = new ReadOnlySpan<byte>(&field, sizeof(MessageField));
             return BinaryPrimitives.ReadInt16LittleEndian(span);
         }
 
         private unsafe int GetFieldOffset(MessageField field)
         {
-            ReadOnlySpan<byte> span = MemoryMarshal.Cast<MessageField, byte>(new ReadOnlySpan<MessageField>(&field, sizeof(MessageField)));
+            ReadOnlySpan<byte> span = new ReadOnlySpan<byte>(&field, sizeof(MessageField));
             return BinaryPrimitives.ReadInt16LittleEndian(span.Slice(4));
         }
 
         private ReadOnlySpan<byte> GetField(MessageField field, ReadOnlySpan<byte> payload)
         {
             int offset = GetFieldOffset(field);
-            int length = GetFieldOffset(field);
+            int length = GetFieldLength(field);
 
             if (length == 0 || offset + length > payload.Length)
             {
@@ -353,13 +351,13 @@ namespace System.Net
         private byte[] makeNtlm2Hash(string domain, string userName, string password)
         {
             byte[] pwHash = new byte[DigestLength];
-            byte[] pwBytes = Utf16.GetBytes(_nc.Password);
+            byte[] pwBytes = Encoding.Unicode.GetBytes(Credentials.Password);
 
             Md4.Hash(pwHash, pwBytes);
             HMACMD5 hmac = new HMACMD5(pwHash);
 
             // strangely, user is upper case, domain is not.
-            byte[] blob = Utf16.GetBytes(String.Concat(userName.ToUpper(), domain));
+            byte[] blob = Encoding.Unicode.GetBytes(String.Concat(userName.ToUpper(), domain));
 
             return hmac.ComputeHash(blob);
         }
@@ -576,7 +574,7 @@ namespace System.Net
 
             // Verify message type and signature 
             if (challengeMessage[0].Header.MessageType != MessageType.Challenge ||
-                !_header.AsSpan().SequenceEqual(asBytes.Slice(0, _header.Length)))
+                !NtlmHeader.SequenceEqual(asBytes.Slice(0, NtlmHeader.Length)))
             {
                 return null;
             }
@@ -585,7 +583,7 @@ namespace System.Net
             ReadOnlySpan<byte> targetName = GetField(challengeMessage[0].TargetName, asBytes);
             if (Diag)
             {
-                string target = Utf16.GetString(targetName);
+                string target = Encoding.Unicode.GetString(targetName);
                 Console.WriteLine("Get challenge from '{0}' with 0x{1:x} ({2}) flags", target, flags, FlagsEnumToString<Flags>(flags));
             }
 
@@ -626,7 +624,7 @@ namespace System.Net
             }
             
             int responseLength = sizeof(AuthenticateMessage) + sizeof(NtChallengeResponse) + targetInfo.Length +
-                                 (_nc.UserName.Length + _nc.Domain.Length) * 2 + s_workstation.Length;
+                                 (Credentials.UserName.Length + Credentials.Domain.Length) * 2 + s_workstation.Length;
             
             byte[] responseBytes = new byte[responseLength];
             Span<byte> responseAsSpan = new Span<byte>(responseBytes);
@@ -637,18 +635,18 @@ namespace System.Net
             int payloadOffset = sizeof(AuthenticateMessage);
 
             responseAsSpan.Clear();
-            _header.CopyTo(responseAsSpan);
+            NtlmHeader.CopyTo(responseAsSpan);
 
             // TBD calculate flags.
             response[0].Header.MessageType = MessageType.Authenticate;
             response[0].Flags = Flags.NegotiateNtlm | Flags.NegotiateNtlm2 | Flags.NegotiateUnicode | Flags.TargetName | Flags.TargetTypeServer | Flags.NegotiateTargetInfo;
 
             // Calculate hash for hmac - same for lm2 and ntlm2
-            byte[] ntlm2hash = makeNtlm2Hash(_nc.Domain, _nc.UserName, _nc.Password);
+            byte[] ntlm2hash = makeNtlm2Hash(Credentials.Domain, Credentials.UserName, Credentials.Password);
 
             // Get random bytes for client challenge
             byte[] clientChallenge = new byte[ChallengeLength];
-            Rnd.NextBytes(clientChallenge);
+            Rnd.GetBytes(clientChallenge);
 
             // Create LM2 response.
             ReadOnlySpan<byte> serverChallenge = asBytes.Slice(24, 8);
@@ -657,8 +655,8 @@ namespace System.Net
             // Create NTLM2 response 
             payloadOffset += makeNtlm2ChallengeResponse(ntlm2hash, serverChallenge, clientChallenge, targetInfo, ref response[0].NtChallengeResponse, ref payload);
 
-            payloadOffset += AddToPayload(ref response[0].UserName, _nc.UserName, ref payload, payloadOffset);
-            payloadOffset += AddToPayload(ref response[0].DomainName, _nc.Domain, ref payload, payloadOffset);
+            payloadOffset += AddToPayload(ref response[0].UserName, Credentials.UserName, ref payload, payloadOffset);
+            payloadOffset += AddToPayload(ref response[0].DomainName, Credentials.Domain, ref payload, payloadOffset);
             AddToPayload(ref response[0].Workstation, s_workstation, ref payload, payloadOffset);
 
             return responseBytes;
