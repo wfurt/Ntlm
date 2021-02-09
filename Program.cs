@@ -10,10 +10,10 @@ namespace NtlmTest
 {
     class Program
     {
-        private static NetworkCredential nc = new NetworkCredential("test", "????", "");
+        private static NetworkCredential nc;
 
-         static async Task Authenticate(String uri, bool useNtlm = true)
-         {
+        static async Task Authenticate(String uri, bool useNtlm = true)
+        {
             var handler = new SocketsHttpHandler();
             var client = new HttpClient(handler);
             client.DefaultRequestHeaders.Add( "Accept", "*/*");
@@ -44,7 +44,28 @@ namespace NtlmTest
 
         static async Task Main(string[] args)
         {
-            String uri = args.Length > 0 ? args[0] : "http://github.com/";
+            string uri = args.Length > 0 ? args[0] : "http://github.com/";
+            string env = Environment.GetEnvironmentVariable("CREDENTIALS");
+
+            if (String.IsNullOrEmpty(env))
+            {
+                // lame credentials. cab be updated for testing.
+                nc = new NetworkCredential("test", "????", "");
+            }
+            else
+            {
+                // assume domain\user:password
+                string[] part1 = env.Split(new char[] { ':' } , 2);
+                string[] part2 = part1[0].Split(new char[] { '\\' }, 2);
+                if (part2.Length == 1)
+                {
+                    nc = new NetworkCredential(part1[0], part1[1]);
+                }
+                else
+                {
+                    nc = new NetworkCredential(part2[1], part1[1], part2[0]);
+                }
+            }
 
             var client = new HttpClient();
             HttpResponseMessage probe = await client.GetAsync(uri, CancellationToken.None);
