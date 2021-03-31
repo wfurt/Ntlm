@@ -186,19 +186,8 @@ namespace System.Net
             RequiestMic = 3
         }
 
-        private unsafe struct spnego
-        {
-            public fixed byte oid[6];
-            public fixed byte sequenceof[2];
-        }
-
         private readonly NetworkCredential Credentials;
         private readonly RandomNumberGenerator Rnd;
-
-        static Ntlm()
-        {
-         //   Rnd = new Random();
-        }
 
         public Ntlm(NetworkCredential credentials)
         {
@@ -266,26 +255,26 @@ namespace System.Net
                 // }
                 using (writer.PushSequence(new Asn1Tag(TagClass.ContextSpecific, (int)NegotiationToken.NegTokenInit)))
                 {
-                    writer.PushSequence();
-
-                    // MechType::= OBJECT IDENTIFIER
-                    //    -- OID represents each security mechanism as suggested by
-                    //   --[RFC2743]
-                    //
-                    // MechTypeList::= SEQUENCE OF MechType
-                    using (writer.PushSequence(new Asn1Tag(TagClass.ContextSpecific, (int)NegTokenInit.MechTypes)))
+                    using (writer.PushSequence())
                     {
-                        writer.PushSequence();
-                        writer.WriteObjectIdentifier(NtlmOid);
-                        writer.PopSequence();
-                    }
+                        // MechType::= OBJECT IDENTIFIER
+                        //    -- OID represents each security mechanism as suggested by
+                        //   --[RFC2743]
+                        //
+                        // MechTypeList::= SEQUENCE OF MechType
+                        using (writer.PushSequence(new Asn1Tag(TagClass.ContextSpecific, (int)NegTokenInit.MechTypes)))
+                        {
+                            using (writer.PushSequence())
+                            {
+                                writer.WriteObjectIdentifier(NtlmOid);
+                            }
+                        }
 
-                    using (writer.PushSequence(new Asn1Tag(TagClass.ContextSpecific, (int)NegTokenInit.MechToken)))
-                    {
-                        writer.WriteOctetString(asBytes);
+                        using (writer.PushSequence(new Asn1Tag(TagClass.ContextSpecific, (int)NegTokenInit.MechToken)))
+                        {
+                            writer.WriteOctetString(asBytes);
+                        }
                     }
-
-                    writer.PopSequence();
                 }
             }
 
@@ -476,6 +465,7 @@ namespace System.Net
             byte[] data = Convert.FromBase64String(challengeString);
             AsnReader reader = new AsnReader(data, AsnEncodingRules.DER);
             AsnReader challengeReader = reader.ReadSequence(new Asn1Tag(TagClass.ContextSpecific, (int)NegotiationToken.NegTokenResp));
+            reader.ThrowIfNotEmpty();
 
             // NegTokenResp::= SEQUENCE {
             //    negState[0] ENUMERATED {
@@ -505,12 +495,15 @@ namespace System.Net
                     {
                         case NegTokenResp.NegState:
                             state = specificValue.ReadEnumeratedValue<NegState>();
+                            specificValue.ThrowIfNotEmpty();
                             break;
                         case NegTokenResp.SupportedMech:
                             mech = specificValue.ReadObjectIdentifier();
+                            specificValue.ThrowIfNotEmpty();
                             break;
                         case NegTokenResp.ResponseToken:
                             blob = specificValue.ReadOctetString();
+                            specificValue.ThrowIfNotEmpty();
                             break;
                         default:
                             // Ignore everything else
@@ -550,13 +543,11 @@ namespace System.Net
 
                     using (writer.PushSequence(new Asn1Tag(TagClass.ContextSpecific, (int)NegotiationToken.NegTokenResp)))
                     {
-                        writer.PushSequence();
+                        using (writer.PushSequence())
                         using (writer.PushSequence(new Asn1Tag(TagClass.ContextSpecific, (int)NegTokenInit.MechToken)))
                         {
                             writer.WriteOctetString(response);
                         }
-
-                        writer.PopSequence();
                     }
                     
                     return "Negotiate " + Convert.ToBase64String(writer.Encode(), Base64FormattingOptions.None);
