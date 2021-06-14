@@ -363,22 +363,8 @@ namespace System.Net
             Debug.Assert(lm2Hash.Length == DigestLength);
 
             Span<AuthenticateMessage> response = MemoryMarshal.Cast<byte, AuthenticateMessage>(responseAsBytes);
-
-            // Get server and client nonce
-            Span<byte> blob = stackalloc byte[16];
-            serverChallenge.CopyTo(blob);
-            clientChallenge.CopyTo(blob.Slice(ChallengeLength));
-
             Span<byte> lmResponse = responseAsBytes.Slice((int)Marshal.OffsetOf(typeof(AuthenticateMessage), "LmResponse"), ChallengeResponseLength);
-
-            HMACMD5 hmac = new HMACMD5(lm2Hash);
-            bool result = hmac.TryComputeHash(blob, lmResponse, out int bytes);
-            if (!result ||  bytes != DigestLength)
-            {
-                return 0;
-            }
-
-            clientChallenge.CopyTo(lmResponse.Slice(DigestLength));
+            lmResponse.Fill(0);
             SetField(ref response[0].LmChallengeResponse, ChallengeResponseLength, (int)Marshal.OffsetOf(typeof(AuthenticateMessage), "LmResponse"));
 
             return ChallengeResponseLength;
