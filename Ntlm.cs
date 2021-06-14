@@ -21,7 +21,7 @@ namespace System.Net
         
         private const int ChallengeResponseLength = 24;
 
-        private const int HeaderLenght = 8;
+        private const int HeaderLength = 8;
 
         private const int ChallengeLength = 8;
 
@@ -77,7 +77,7 @@ namespace System.Net
         [StructLayout(LayoutKind.Sequential)]
         private unsafe struct MessageHeader
         {
-            fixed byte Header[HeaderLenght];
+            fixed byte Header[HeaderLength];
             public MessageType MessageType;
             byte _unused1;
             byte _unused2;
@@ -224,7 +224,7 @@ namespace System.Net
 
         public unsafe string CreateNegotiateMessage(bool spnego = false)
         {
-            Debug.Assert(HeaderLenght == NtlmHeader.Length);
+            Debug.Assert(HeaderLength == NtlmHeader.Length);
 
             Span<byte> asBytes = stackalloc byte[sizeof(NegotiateMessage)];
             Span<NegotiateMessage> message = MemoryMarshal.Cast<byte, NegotiateMessage>(asBytes);
@@ -581,7 +581,7 @@ namespace System.Net
             if (((flags & Flags.NegotiateNtlm2) != Flags.NegotiateNtlm2) ||
                 ((flags & Flags.NegotiateTargetInfo) != Flags.NegotiateTargetInfo))
             {
-                throw new NotSupportedException("Only NTLNv2 is supported");
+                throw new NotSupportedException("Only NTLMv2 is supported");
             }
 
             ReadOnlySpan<byte> targetInfo = GetField(challengeMessage[0].TargetInfo, asBytes);
