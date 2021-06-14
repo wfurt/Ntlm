@@ -389,7 +389,7 @@ namespace System.Net
         // Set temp to ConcatenationOf(Responserversion, HiResponserversion, Z(6), Time, ClientChallenge, Z(4), ServerName, Z(4))
         // Set NTProofStr to HMAC_MD5(ResponseKeyNT, ConcatenationOf(CHALLENGE_MESSAGE.ServerChallenge, temp))
         // Set NtChallengeResponse to ConcatenationOf(NTProofStr, temp)
-        private unsafe int makeNtlm2ChallengeResponse(byte[] lm2Hash, ReadOnlySpan<byte> serverChallenge, Span<byte> clientChallenge, ReadOnlySpan<byte> serverInfo, ref MessageField field, ref Span<byte> payload)
+        private unsafe int makeNtlm2ChallengeResponse(DateTime time, byte[] lm2Hash, ReadOnlySpan<byte> serverChallenge, Span<byte> clientChallenge, ReadOnlySpan<byte> serverInfo, ref MessageField field, ref Span<byte> payload)
         {
             Debug.Assert(serverChallenge.Length == ChallengeLength);
             Debug.Assert(clientChallenge.Length == ChallengeLength);
@@ -401,7 +401,7 @@ namespace System.Net
                        
             temp[0].HiResponserversion = 1;
             temp[0].Responserversion = 1;
-            temp[0].Time = DateTime.Now.Ticks;
+            temp[0].Time = time.ToFileTimeUtc();
 
             int offset = (int)Marshal.OffsetOf(typeof(NtChallengeResponse), "ClientChallenge");
             clientChallenge.CopyTo(blob.Slice(offset, ChallengeLength));
@@ -644,7 +644,7 @@ namespace System.Net
             makeLm2ChallengeResponse(ntlm2hash, serverChallenge, clientChallenge, ref responseAsSpan);
 
             // Create NTLM2 response 
-            payloadOffset += makeNtlm2ChallengeResponse(ntlm2hash, serverChallenge, clientChallenge, targetInfo, ref response[0].NtChallengeResponse, ref payload);
+            payloadOffset += makeNtlm2ChallengeResponse(DateTime.UtcNow, ntlm2hash, serverChallenge, clientChallenge, targetInfo, ref response[0].NtChallengeResponse, ref payload);
 
             payloadOffset += AddToPayload(ref response[0].UserName, Credentials.UserName, ref payload, payloadOffset);
             payloadOffset += AddToPayload(ref response[0].DomainName, Credentials.Domain, ref payload, payloadOffset);
