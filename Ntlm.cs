@@ -60,7 +60,7 @@ namespace System.Net
             RequestIdenityToken = 0x00100000,
             RequestNonNtSessionKey = 0x00400000,
             NegotiateTargetInfo = 0x00800000,
-            NegotiateVersion = 0x01000000,
+            NegotiateVersion = 0x02000000,
             Negotiate128 = 0x20000000,
             NegotiateKeyExchange = 0x40000000,
             Negotiate56 = 0x80000000,
