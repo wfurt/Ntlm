@@ -337,10 +337,10 @@ namespace System.Net
         // Define NTOWFv2(Passwd, User, UserDom) as HMAC_MD5(MD4(UNICODE(Passwd)), UNICODE(ConcatenationOf(Uppercase(User),
         // UserDom ) ) )
         // EndDefine
-        private byte[] makeNtlm2Hash(string domain, string userName, string password)
+        private static byte[] makeNtlm2Hash(string domain, string userName, string password)
         {
             byte[] pwHash = new byte[DigestLength];
-            byte[] pwBytes = Encoding.Unicode.GetBytes(Credentials.Password);
+            byte[] pwBytes = Encoding.Unicode.GetBytes(password);
 
             Md4.Hash(pwHash, pwBytes);
             HMACMD5 hmac = new HMACMD5(pwHash);
