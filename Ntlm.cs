@@ -681,7 +681,7 @@ namespace System.Net
             makeLm2ChallengeResponse(ntlm2hash, serverChallenge, clientChallenge, ref responseAsSpan);
 
             // Create NTLM2 response 
-            payloadOffset += makeNtlm2ChallengeResponse(DateTime.UtcNow, ntlm2hash, serverChallenge, clientChallenge, targetInfoBuffer, ref response[0].NtChallengeResponse, ref payload);
+            payloadOffset += makeNtlm2ChallengeResponse(time, ntlm2hash, serverChallenge, clientChallenge, targetInfoBuffer, ref response[0].NtChallengeResponse, ref payload);
 
             payloadOffset += AddToPayload(ref response[0].UserName, Credentials.UserName, ref payload, payloadOffset);
             payloadOffset += AddToPayload(ref response[0].DomainName, Credentials.Domain, ref payload, payloadOffset);
