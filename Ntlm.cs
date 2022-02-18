@@ -21,11 +21,13 @@ namespace System.Net
         
         private const int ChallengeResponseLength = 24;
 
-        private const int HeaderLenght = 8;
+        private const int HeaderLength = 8;
 
         private const int ChallengeLength = 8;
 
         private const int DigestLength = 16;
+
+        private const int SessionKeyLength = 16;
 
         private const string SpnegoOid = "1.3.6.1.5.5.2";
 
@@ -60,7 +62,7 @@ namespace System.Net
             RequestIdenityToken = 0x00100000,
             RequestNonNtSessionKey = 0x00400000,
             NegotiateTargetInfo = 0x00800000,
-            NegotiateVersion = 0x01000000,
+            NegotiateVersion = 0x02000000,
             Negotiate128 = 0x20000000,
             NegotiateKeyExchange = 0x40000000,
             Negotiate56 = 0x80000000,
@@ -77,7 +79,7 @@ namespace System.Net
         [StructLayout(LayoutKind.Sequential)]
         private unsafe struct MessageHeader
         {
-            fixed byte Header[HeaderLenght];
+            fixed byte Header[HeaderLength];
             public MessageType MessageType;
             byte _unused1;
             byte _unused2;
@@ -222,17 +224,29 @@ namespace System.Net
             return i != 0 && (i & (i - 1)) == 0;
         }
 
-        public unsafe string CreateNegotiateMessage(bool spnego = false)
+        private unsafe void CreateNegotiateMessageRaw(Span<byte> asBytes)
         {
-            Debug.Assert(HeaderLenght == NtlmHeader.Length);
+            Debug.Assert(HeaderLength == NtlmHeader.Length);
+            Debug.Assert(asBytes.Length == sizeof(NegotiateMessage));
 
-            Span<byte> asBytes = stackalloc byte[sizeof(NegotiateMessage)];
             Span<NegotiateMessage> message = MemoryMarshal.Cast<byte, NegotiateMessage>(asBytes);
 
             asBytes.Clear();
             NtlmHeader.CopyTo(asBytes);
             message[0].Header.MessageType = MessageType.Negotiate;
-            message[0].Flags = Flags.NegotiateNtlm2 | Flags.NegotiateUnicode | Flags.TargetName | Flags.TargetTypeServer | Flags.NegotiateAlwaysSign;
+            message[0].Flags =
+                Flags.NegotiateNtlm2 | Flags.NegotiateNtlm | Flags.NegotiateUnicode | Flags.TargetName |
+                Flags.NegotiateVersion | Flags.NegotiateKeyExchange | Flags.Negotiate128 |
+                Flags.NegotiateTargetInfo | Flags.NegotiateAlwaysSign | Flags.NegotiateSign;
+            message[0].Version = new Version { VersionMajor = 6, VersionMinor = 1, ProductBuild = 7600, CurrentRevision = 15 };
+        }
+
+        public unsafe string CreateNegotiateMessage(bool spnego = false)
+        {
+            Debug.Assert(HeaderLength == NtlmHeader.Length);
+
+            Span<byte> asBytes = stackalloc byte[sizeof(NegotiateMessage)];
+            CreateNegotiateMessageRaw(asBytes);
 
             if (!spnego)
             {
@@ -337,10 +351,10 @@ namespace System.Net
         // Define NTOWFv2(Passwd, User, UserDom) as HMAC_MD5(MD4(UNICODE(Passwd)), UNICODE(ConcatenationOf(Uppercase(User),
         // UserDom ) ) )
         // EndDefine
-        private byte[] makeNtlm2Hash(string domain, string userName, string password)
+        private static byte[] makeNtlm2Hash(string domain, string userName, string password)
         {
             byte[] pwHash = new byte[DigestLength];
-            byte[] pwBytes = Encoding.Unicode.GetBytes(Credentials.Password);
+            byte[] pwBytes = Encoding.Unicode.GetBytes(password);
 
             Md4.Hash(pwHash, pwBytes);
             HMACMD5 hmac = new HMACMD5(pwHash);
@@ -363,22 +377,8 @@ namespace System.Net
             Debug.Assert(lm2Hash.Length == DigestLength);
 
             Span<AuthenticateMessage> response = MemoryMarshal.Cast<byte, AuthenticateMessage>(responseAsBytes);
-
-            // Get server and client nonce
-            Span<byte> blob = stackalloc byte[16];
-            serverChallenge.CopyTo(blob);
-            clientChallenge.CopyTo(blob.Slice(ChallengeLength));
-
             Span<byte> lmResponse = responseAsBytes.Slice((int)Marshal.OffsetOf(typeof(AuthenticateMessage), "LmResponse"), ChallengeResponseLength);
-
-            HMACMD5 hmac = new HMACMD5(lm2Hash);
-            bool result = hmac.TryComputeHash(blob, lmResponse, out int bytes);
-            if (!result ||  bytes != DigestLength)
-            {
-                return 0;
-            }
-
-            clientChallenge.CopyTo(lmResponse.Slice(DigestLength));
+            lmResponse.Fill(0);
             SetField(ref response[0].LmChallengeResponse, ChallengeResponseLength, (int)Marshal.OffsetOf(typeof(AuthenticateMessage), "LmResponse"));
 
             return ChallengeResponseLength;
@@ -389,7 +389,7 @@ namespace System.Net
         // Set temp to ConcatenationOf(Responserversion, HiResponserversion, Z(6), Time, ClientChallenge, Z(4), ServerName, Z(4))
         // Set NTProofStr to HMAC_MD5(ResponseKeyNT, ConcatenationOf(CHALLENGE_MESSAGE.ServerChallenge, temp))
         // Set NtChallengeResponse to ConcatenationOf(NTProofStr, temp)
-        private unsafe int makeNtlm2ChallengeResponse(byte[] lm2Hash, ReadOnlySpan<byte> serverChallenge, Span<byte> clientChallenge, ReadOnlySpan<byte> serverInfo, ref MessageField field, ref Span<byte> payload)
+        private unsafe int makeNtlm2ChallengeResponse(DateTime time, byte[] lm2Hash, ReadOnlySpan<byte> serverChallenge, Span<byte> clientChallenge, ReadOnlySpan<byte> serverInfo, ref MessageField field, ref Span<byte> payload)
         {
             Debug.Assert(serverChallenge.Length == ChallengeLength);
             Debug.Assert(clientChallenge.Length == ChallengeLength);
@@ -401,7 +401,7 @@ namespace System.Net
                        
             temp[0].HiResponserversion = 1;
             temp[0].Responserversion = 1;
-            temp[0].Time = DateTime.Now.Ticks;
+            temp[0].Time = time.ToFileTimeUtc();
 
             int offset = (int)Marshal.OffsetOf(typeof(NtChallengeResponse), "ClientChallenge");
             clientChallenge.CopyTo(blob.Slice(offset, ChallengeLength));
@@ -581,12 +581,15 @@ namespace System.Net
             if (((flags & Flags.NegotiateNtlm2) != Flags.NegotiateNtlm2) ||
                 ((flags & Flags.NegotiateTargetInfo) != Flags.NegotiateTargetInfo))
             {
-                throw new NotSupportedException("Only NTLNv2 is supported");
+                throw new NotSupportedException("Only NTLMv2 is supported");
             }
 
             ReadOnlySpan<byte> targetInfo = GetField(challengeMessage[0].TargetInfo, asBytes);
+            Span<byte> targetInfoBuffer = new byte[targetInfo.Length + 20 /* channel binding */ + 8 /* flags */];
+            int targetInfoOffset = 0;
+            DateTime time = DateTime.UtcNow;
 
-            if (Diag && targetInfo.Length > 0)
+            if (targetInfo.Length > 0)
             {
                 ReadOnlySpan<byte> info = targetInfo;
                 while (info.Length >= 4)
@@ -596,26 +599,56 @@ namespace System.Net
                     byte l2 = info[3];
                     int length = (l2 << 8) + l1;
 
-                    Console.WriteLine("Got ID {0} with {1} len", ID, length);
-
                     if (ID == 0)
                     {
-                        Console.WriteLine("EOF on AV PAIRS reached!");
                         break;
                     }
 
-                    if (4 + length > info.Length)
+                    if (Diag)
                     {
-                        Console.WriteLine("got field {0} with Len {1} while only {2} remaining", ID, length, info.Length);
-                        break;
+                        Console.WriteLine("Got ID {0} with {1} len", ID, length);
                     }
+
+                    if (ID == 7) // Timestamp
+                    {
+                        time = DateTime.FromFileTimeUtc(BitConverter.ToInt64(info.Slice(4, 8)));
+                    }
+
+                    // Copy attribute-value pair into destination target info
+                    info.Slice(0, length + 4).CopyTo(targetInfoBuffer.Slice(targetInfoOffset, length + 4));
+                    targetInfoOffset += length + 4;
 
                     info = info.Slice(length + 4);
                 }
             }
+
+            // Add new entries into destination target info
             
-            int responseLength = sizeof(AuthenticateMessage) + sizeof(NtChallengeResponse) + targetInfo.Length +
-                                 (Credentials.UserName.Length + Credentials.Domain.Length) * 2 + s_workstation.Length;
+            // TBD: Target name (eg. HTTP/example.org, ID 0x9)
+
+            // MsvAvChannelBindings
+            targetInfoBuffer[targetInfoOffset] = 0xa;
+            targetInfoBuffer[targetInfoOffset + 2] = 16;
+            // TBD: Copy channel bindings to targetInfoBuffer + 4
+            // (zeros for no channel binding)
+            targetInfoOffset += 16 + 4;
+
+            // Flags
+            targetInfoBuffer[targetInfoOffset] = 6;
+            targetInfoBuffer[targetInfoOffset + 2] = 4; // Length of flags
+            targetInfoBuffer[targetInfoOffset + 4] = 2; // MIC flag
+            targetInfoOffset += 8;
+
+            // EOL
+            targetInfoOffset += 4;
+
+            Debug.Assert(targetInfoOffset == targetInfoBuffer.Length);
+
+            int responseLength = sizeof(AuthenticateMessage) + sizeof(NtChallengeResponse) + targetInfoOffset +
+                                 Encoding.Unicode.GetByteCount(Credentials.UserName) +
+                                 Encoding.Unicode.GetByteCount(Credentials.Domain) +
+                                 s_workstation.Length +
+                                 SessionKeyLength;
             
             byte[] responseBytes = new byte[responseLength];
             Span<byte> responseAsSpan = new Span<byte>(responseBytes);
@@ -630,7 +663,11 @@ namespace System.Net
 
             // TBD calculate flags.
             response[0].Header.MessageType = MessageType.Authenticate;
-            response[0].Flags = Flags.NegotiateNtlm | Flags.NegotiateNtlm2 | Flags.NegotiateUnicode | Flags.TargetName | Flags.TargetTypeServer | Flags.NegotiateTargetInfo;
+            response[0].Flags =
+                Flags.NegotiateNtlm2 | Flags.NegotiateNtlm | Flags.NegotiateUnicode | Flags.TargetName |
+                Flags.NegotiateVersion | Flags.NegotiateKeyExchange | Flags.Negotiate128 | Flags.NegotiateTargetInfo |
+                Flags.NegotiateAlwaysSign | Flags.NegotiateSign;
+            response[0].Version = new Version { VersionMajor = 6, VersionMinor = 1, ProductBuild = 7600, CurrentRevision = 15 };
 
             // Calculate hash for hmac - same for lm2 and ntlm2
             byte[] ntlm2hash = makeNtlm2Hash(Credentials.Domain, Credentials.UserName, Credentials.Password);
@@ -644,11 +681,46 @@ namespace System.Net
             makeLm2ChallengeResponse(ntlm2hash, serverChallenge, clientChallenge, ref responseAsSpan);
 
             // Create NTLM2 response 
-            payloadOffset += makeNtlm2ChallengeResponse(ntlm2hash, serverChallenge, clientChallenge, targetInfo, ref response[0].NtChallengeResponse, ref payload);
+            payloadOffset += makeNtlm2ChallengeResponse(time, ntlm2hash, serverChallenge, clientChallenge, targetInfoBuffer, ref response[0].NtChallengeResponse, ref payload);
 
             payloadOffset += AddToPayload(ref response[0].UserName, Credentials.UserName, ref payload, payloadOffset);
             payloadOffset += AddToPayload(ref response[0].DomainName, Credentials.Domain, ref payload, payloadOffset);
-            AddToPayload(ref response[0].Workstation, s_workstation, ref payload, payloadOffset);
+            payloadOffset += AddToPayload(ref response[0].Workstation, s_workstation, ref payload, payloadOffset);
+
+            // Generate random session key that will be used for signing the messages
+            var exportedSessionKey = new byte[16];
+            RandomNumberGenerator.Fill(exportedSessionKey);
+
+            // Both flags are necessary to exchange keys needed for MIC (!)
+            Debug.Assert(flags.HasFlag(Flags.NegotiateSign) && flags.HasFlag(Flags.NegotiateKeyExchange));
+
+            // Derive session base key
+            byte[] sessionBaseKey = new HMACMD5(ntlm2hash).ComputeHash(responseAsSpan.Slice(response[0].NtChallengeResponse.PayloadOffset, 16).ToArray());
+            sessionBaseKey.AsSpan().CopyTo(exportedSessionKey);
+
+            // Encrypt exportedSessionKey with sessionBaseKey
+            var encryptedRandomSessionKey = new byte[16];
+            using (RC4 rc4 = new RC4())
+            {
+                rc4.Key = sessionBaseKey;
+                rc4.TransformBlock(exportedSessionKey, 0, 16, encryptedRandomSessionKey, 0);
+            }
+            payloadOffset += AddToPayload(ref response[0].EncryptedRandomSessionKey, encryptedRandomSessionKey, ref payload, payloadOffset);
+
+            // Calculate MIC
+            
+            // TBD: Save and reuse the original negotiate message
+            Span<byte> negotiateBuffer = stackalloc byte[sizeof(NegotiateMessage)];
+            CreateNegotiateMessageRaw(negotiateBuffer);
+
+            var hmac = IncrementalHash.CreateHMAC(HashAlgorithmName.MD5, exportedSessionKey);
+            hmac.AppendData(negotiateBuffer);
+            hmac.AppendData(blob);
+            hmac.AppendData(responseBytes.AsSpan(0, payloadOffset));
+            fixed (byte *mic = response[0].Mic)
+                hmac.GetHashAndReset().CopyTo(new Span<byte>(mic, 16));
+
+            Debug.Assert(payloadOffset == responseBytes.Length);
 
             return responseBytes;
         }
